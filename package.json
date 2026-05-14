@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "description": "A simple local coding-agent CLI.",
   "type": "module",
-  "packageManager": "pnpm@11.1.2",
   "bin": {
     "lee-codex": "./dist/index.js"
   },

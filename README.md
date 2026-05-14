@@ -5,15 +5,15 @@ Lee Codex is a small local coding-agent CLI. It runs a direct JSON-action loop a
 ## Install
 
 ```bash
-pnpm install
-pnpm run build
-pnpm link --global
+npm install
+npm run build
+npm link
 ```
 
 You can also run it in development without linking:
 
 ```bash
-pnpm run dev -- "create a README"
+npm run dev -- "create a README"
 ```
 
 ## Provider Setup
@@ -111,9 +111,9 @@ Lee Codex rejects prose-wrapped JSON and Markdown fences. If the first response 
 ## Development
 
 ```bash
-pnpm test
-pnpm run typecheck
-pnpm run build
+npm test
+npm run typecheck
+npm run build
 node dist/index.js --help
 ```
 
