@@ -5,7 +5,14 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { runAgentTurn } from "../src/agent.js";
 import { FakeModelClient, type ModelClient } from "../src/model.js";
 import { createToolExecutor } from "../src/tools.js";
-import type { ChatMessage, ModelRequest, ModelResponse, ToolCall, ToolResult } from "../src/types.js";
+import type {
+  AssistantChatMessage,
+  ChatMessage,
+  ModelRequest,
+  ModelResponse,
+  ToolCall,
+  ToolResult
+} from "../src/types.js";
 
 let workspace: string;
 
@@ -23,7 +30,7 @@ class RecordingModel implements ModelClient {
 
   constructor(
     private readonly responses: Array<
-      string | ((request: ModelRequest) => string)
+      AssistantChatMessage | ((request: ModelRequest) => AssistantChatMessage)
     >
   ) {}
 
@@ -36,10 +43,11 @@ class RecordingModel implements ModelClient {
       throw new Error("No response");
     }
 
-    const content = typeof response === "function" ? response(request) : response;
+    const message = typeof response === "function" ? response(request) : response;
     return {
-      message: { role: "assistant", content },
-      content
+      message,
+      content: message.content,
+      finishReason: message.tool_calls?.length ? "tool_calls" : "stop"
     };
   }
 }
@@ -49,7 +57,7 @@ describe("runAgentTurn", () => {
     const result = await runAgentTurn({
       task: "say done",
       modelName: "fake",
-      model: new FakeModelClient(['{"type":"final","message":"Done."}']),
+      model: new FakeModelClient(["Done."]),
       tools: createToolExecutor({ workspaceRoot: workspace }),
       maxSteps: 15
     });
@@ -61,13 +69,36 @@ describe("runAgentTurn", () => {
     });
   });
 
-  test("executes a tool and feeds the result back to the model", async () => {
+  test("executes a native tool call and feeds the tool result back to the model", async () => {
     await writeFile(path.join(workspace, "note.txt"), "hello");
     const model = new RecordingModel([
-      '{"type":"tool","name":"read_file","args":{"path":"note.txt"}}',
+      toolCallMessage("call_read", "read_file", { path: "note.txt" }),
       (request) => {
-        expect(JSON.stringify(request.messages)).toContain("hello");
-        return '{"type":"final","message":"Read it."}';
+        expect(request.tools?.map((tool) => tool.function.name)).toEqual([
+          "list_files",
+          "read_file",
+          "write_file",
+          "run_command"
+        ]);
+        expect(request.toolChoice).toBe("auto");
+        expect(request.parallelToolCalls).toBe(false);
+        expect(request.messages).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              role: "assistant",
+              content: null,
+              tool_calls: expect.arrayContaining([
+                expect.objectContaining({ id: "call_read" })
+              ])
+            }),
+            expect.objectContaining({
+              role: "tool",
+              tool_call_id: "call_read",
+              content: expect.stringContaining("hello")
+            })
+          ])
+        );
+        return finalMessage("Read it.");
       }
     ]);
 
@@ -83,13 +114,49 @@ describe("runAgentTurn", () => {
     expect(result.toolSummaries).toEqual(["read_file note.txt -> ok"]);
   });
 
+  test("executes multiple native tool calls sequentially in one step", async () => {
+    const calls: ToolCall[] = [];
+    const tools = {
+      async execute(call: ToolCall): Promise<ToolResult> {
+        calls.push(call);
+        return { ok: true, data: { name: call.name } };
+      }
+    };
+    const model = new RecordingModel([
+      {
+        role: "assistant",
+        content: "I will inspect two things.",
+        tool_calls: [
+          nativeCall("call_list", "list_files", {}),
+          nativeCall("call_read", "read_file", { path: "README.md" })
+        ]
+      },
+      finalMessage("Done.")
+    ]);
+
+    const result = await runAgentTurn({
+      task: "do two things",
+      modelName: "fake",
+      model,
+      tools,
+      maxSteps: 15
+    });
+
+    expect(result.status).toBe("success");
+    expect(calls.map((call) => call.name)).toEqual(["list_files", "read_file"]);
+    expect(result.toolSummaries).toEqual([
+      "list_files -> ok",
+      "read_file README.md -> ok"
+    ]);
+  });
+
   test("returns incomplete status when maxSteps is exhausted", async () => {
     const result = await runAgentTurn({
       task: "loop",
       modelName: "fake",
       model: new FakeModelClient([
-        '{"type":"tool","name":"list_files","args":{}}',
-        '{"type":"tool","name":"list_files","args":{}}'
+        toolCallMessage("call_1", "list_files", {}),
+        toolCallMessage("call_2", "list_files", {})
       ]),
       tools: createToolExecutor({ workspaceRoot: workspace }),
       maxSteps: 2
@@ -104,10 +171,12 @@ describe("runAgentTurn", () => {
 
   test("feeds unknown tool errors back into the loop", async () => {
     const model = new RecordingModel([
-      '{"type":"tool","name":"missing_tool","args":{}}',
+      toolCallMessage("call_missing", "missing_tool", {}),
       (request) => {
-        expect(JSON.stringify(request.messages)).toContain("Unknown tool missing_tool");
-        return '{"type":"final","message":"Explained."}';
+        expect(JSON.stringify(request.messages)).toContain(
+          "Unknown tool missing_tool"
+        );
+        return finalMessage("Explained.");
       }
     ]);
 
@@ -123,14 +192,35 @@ describe("runAgentTurn", () => {
     expect(result.toolSummaries).toEqual(["missing_tool -> error"]);
   });
 
-  test("allows one repair retry after invalid JSON", async () => {
+  test("feeds malformed native tool arguments back as a tool error", async () => {
     const model = new RecordingModel([
-      "not json",
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_bad_args",
+            type: "function",
+            function: {
+              name: "read_file",
+              arguments: "{path: README.md}"
+            }
+          }
+        ]
+      },
       (request) => {
-        expect(lastMessage(request.messages).content).toContain(
-          "Return exactly one strict JSON object"
+        expect(JSON.stringify(request.messages)).toContain(
+          "Tool arguments were not valid JSON"
         );
-        return '{"type":"final","message":"Recovered."}';
+        expect(request.messages).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              role: "tool",
+              tool_call_id: "call_bad_args"
+            })
+          ])
+        );
+        return finalMessage("Recovered.");
       }
     ]);
 
@@ -145,15 +235,15 @@ describe("runAgentTurn", () => {
     expect(result).toMatchObject({
       status: "success",
       message: "Recovered.",
-      steps: 1
+      steps: 2
     });
   });
 
-  test("fails after a second invalid JSON response", async () => {
+  test("fails when native response cannot be resolved", async () => {
     const result = await runAgentTurn({
-      task: "fail parse",
+      task: "fail resolve",
       modelName: "fake",
-      model: new FakeModelClient(["not json", "also not json"]),
+      model: new FakeModelClient([{ role: "assistant", content: null }]),
       tools: createToolExecutor({ workspaceRoot: workspace }),
       maxSteps: 15
     });
@@ -162,7 +252,9 @@ describe("runAgentTurn", () => {
     if (result.status !== "failed") {
       throw new Error("Expected failed result");
     }
-    expect(result.error).toContain("Model response is not valid JSON");
+    expect(result.error).toContain(
+      "Assistant response had neither content nor tool_calls"
+    );
   });
 
   test("logs concise steps and verbose debug details", async () => {
@@ -178,8 +270,8 @@ describe("runAgentTurn", () => {
       task: "list",
       modelName: "fake",
       model: new FakeModelClient([
-        '{"type":"tool","name":"list_files","args":{}}',
-        '{"type":"final","message":"Done."}'
+        toolCallMessage("call_list", "list_files", {}),
+        finalMessage("Done.")
       ]),
       tools,
       maxSteps: 15,
@@ -193,10 +285,43 @@ describe("runAgentTurn", () => {
     });
 
     expect(steps).toEqual(["Step 1/15: list_files"]);
-    expect(debug.join("\n")).toContain("Model JSON:");
+    expect(debug.join("\n")).toContain("Assistant message:");
     expect(debug.join("\n")).toContain("Tool result:");
   });
 });
+
+function finalMessage(content: string): AssistantChatMessage {
+  return { role: "assistant", content };
+}
+
+function toolCallMessage(
+  id: string,
+  name: string,
+  args: Record<string, unknown>
+): AssistantChatMessage {
+  return {
+    role: "assistant",
+    content: null,
+    tool_calls: [nativeCall(id, name, args)]
+  };
+}
+
+function nativeCall(
+  id: string,
+  name: string,
+  args: Record<string, unknown>
+): AssistantChatMessage["tool_calls"] extends Array<infer T> | null | undefined
+  ? T
+  : never {
+  return {
+    id,
+    type: "function",
+    function: {
+      name,
+      arguments: JSON.stringify(args)
+    }
+  };
+}
 
 function lastMessage(messages: ChatMessage[]): ChatMessage {
   const message = messages.at(-1);

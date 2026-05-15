@@ -1,11 +1,9 @@
 import {
-  buildRepairUserMessage,
-  isProtocolParseError,
-  parseAgentAction
-} from "./protocol.js";
+  resolveNativeResponse,
+  type NativeResolvedToolCall
+} from "./resolvers/native.js";
 import {
   silentLogger,
-  type AgentAction,
   type ChatMessage,
   type Logger,
   type ModelClient,
@@ -13,9 +11,7 @@ import {
   type ToolCall,
   type ToolResult
 } from "./types.js";
-import type { ToolExecutor } from "./tools.js";
-
-type ToolAction = Extract<AgentAction, { type: "tool" }>;
+import { WORKSPACE_TOOL_DEFINITIONS, type ToolExecutor } from "./tools.js";
 
 export interface AgentTurnOptions {
   task: string;
@@ -42,60 +38,63 @@ export type AgentTurnResult =
       toolSummaries: string[];
     };
 
-interface StepRecord {
-  action: ToolAction;
-  result?: ToolResult;
-}
-
 export async function runAgentTurn(
   options: AgentTurnOptions
 ): Promise<AgentTurnResult> {
   const logger = options.logger ?? silentLogger;
-  const stepRecords: StepRecord[] = [];
+  const messages = buildInitialMessages(options);
   const toolSummaries: string[] = [];
 
   for (let step = 1; step <= options.maxSteps; step += 1) {
-    const actionResult = await requestAction(options, stepRecords);
+    const response = await completeStep(options, messages);
 
-    if (!actionResult.ok) {
+    if (!response.ok) {
       return {
         status: "failed",
-        error: actionResult.error,
+        error: response.error,
         steps: step,
         toolSummaries
       };
     }
 
-    const action = actionResult.action;
-
     if (options.verbose) {
-      logger.debug(`Model JSON:\n${actionResult.raw}`);
+      logger.debug(
+        `Assistant message:\n${JSON.stringify(response.value.message, null, 2)}`
+      );
     }
 
-    if (action.type === "final") {
+    const resolved = resolveNativeResponse(response.value);
+
+    if (resolved.type === "failed") {
+      return {
+        status: "failed",
+        error: resolved.error,
+        steps: step,
+        toolSummaries
+      };
+    }
+
+    messages.push(resolved.assistantMessage);
+
+    if (resolved.type === "final") {
       return {
         status: "success",
-        message: action.message,
+        message: resolved.message,
         steps: step,
         toolSummaries
       };
     }
 
-    logger.step(`Step ${step}/${options.maxSteps}: ${summarizeToolCall(action)}`);
+    for (const call of resolved.calls) {
+      const result = await executeResolvedToolCall(options, call, step, logger);
 
-    const result = await options.tools.execute({
-      name: action.name,
-      args: action.args
-    });
+      if (options.verbose) {
+        logger.debug(`Tool result:\n${JSON.stringify(result, null, 2)}`);
+      }
 
-    if (options.verbose) {
-      logger.debug(`Tool result:\n${JSON.stringify(result, null, 2)}`);
+      toolSummaries.push(`${summarizeResolvedToolCall(call)} -> ${result.ok ? "ok" : "error"}`);
+      messages.push(buildToolResultMessage(call, result));
     }
-
-    stepRecords.push({ action, result });
-    toolSummaries.push(
-      `${summarizeToolCall(action)} -> ${result.ok ? "ok" : "error"}`
-    );
   }
 
   return {
@@ -106,89 +105,65 @@ export async function runAgentTurn(
   };
 }
 
-async function requestAction(
+async function completeStep(
   options: AgentTurnOptions,
-  stepRecords: StepRecord[]
-): Promise<
-  | { ok: true; action: AgentAction; raw: string }
-  | { ok: false; error: string }
-> {
-  const messages = buildMessages(options, stepRecords);
-
-  let firstRaw = "";
+  messages: ChatMessage[]
+) {
   try {
-    const response = await options.model.complete({
+    const value = await options.model.complete({
       model: options.modelName,
-      messages
+      messages,
+      tools: WORKSPACE_TOOL_DEFINITIONS,
+      toolChoice: "auto",
+      parallelToolCalls: false
     });
-    firstRaw = response.content ?? "";
-    return { ok: true, action: parseAgentAction(firstRaw), raw: firstRaw };
+    return { ok: true as const, value };
   } catch (error) {
-    if (!isProtocolParseError(error)) {
-      return {
-        ok: false,
-        error: error instanceof Error ? error.message : String(error)
-      };
-    }
-
-    const repairMessages = [
-      ...messages,
-      { role: "assistant" as const, content: firstRaw },
-      {
-        role: "user" as const,
-        content: buildRepairUserMessage(error.message, firstRaw)
-      }
-    ];
-
-    try {
-      const repairResponse = await options.model.complete({
-        model: options.modelName,
-        messages: repairMessages
-      });
-      const repairRaw = repairResponse.content ?? "";
-      return {
-        ok: true,
-        action: parseAgentAction(repairRaw),
-        raw: repairRaw
-      };
-    } catch (repairError) {
-      return {
-        ok: false,
-        error:
-          repairError instanceof Error
-            ? repairError.message
-            : String(repairError)
-      };
-    }
+    return {
+      ok: false as const,
+      error: error instanceof Error ? error.message : String(error)
+    };
   }
 }
 
-function buildMessages(
+async function executeResolvedToolCall(
   options: AgentTurnOptions,
-  stepRecords: StepRecord[]
-): ChatMessage[] {
-  const messages: ChatMessage[] = [
+  call: NativeResolvedToolCall,
+  step: number,
+  logger: Logger
+): Promise<ToolResult> {
+  if (call.status === "invalid") {
+    logger.step(
+      `Step ${step}/${options.maxSteps}: ${call.name} invalid arguments`
+    );
+    return { ok: false, error: call.error };
+  }
+
+  logger.step(`Step ${step}/${options.maxSteps}: ${summarizeToolCall(call)}`);
+  return options.tools.execute({
+    name: call.name,
+    args: call.args
+  });
+}
+
+function buildToolResultMessage(
+  call: NativeResolvedToolCall,
+  result: ToolResult
+): ChatMessage {
+  return {
+    role: "tool",
+    tool_call_id: call.id,
+    name: call.name,
+    content: JSON.stringify(result, null, 2)
+  };
+}
+
+function buildInitialMessages(options: AgentTurnOptions): ChatMessage[] {
+  return [
     { role: "system", content: SYSTEM_PROMPT },
     ...(options.sessionHistory ?? []).map(historyEntryToMessage),
     { role: "user", content: options.task }
   ];
-
-  for (const record of stepRecords) {
-    messages.push({
-      role: "assistant",
-      content: JSON.stringify(record.action)
-    });
-    messages.push({
-      role: "user",
-      content: `Tool result for ${summarizeToolCall(record.action)}:\n${JSON.stringify(
-        record.result,
-        null,
-        2
-      )}`
-    });
-  }
-
-  return messages;
 }
 
 function historyEntryToMessage(entry: SessionHistoryEntry): ChatMessage {
@@ -196,7 +171,19 @@ function historyEntryToMessage(entry: SessionHistoryEntry): ChatMessage {
     return { role: "assistant", content: entry.content };
   }
 
+  if (entry.role === "tool") {
+    return { role: "user", content: `Previous tool summary: ${entry.content}` };
+  }
+
   return { role: "user", content: entry.content };
+}
+
+function summarizeResolvedToolCall(call: NativeResolvedToolCall): string {
+  if (call.status === "invalid") {
+    return call.name;
+  }
+
+  return summarizeToolCall(call);
 }
 
 function summarizeToolCall(call: ToolCall): string {
@@ -213,14 +200,9 @@ function stringArg(value: unknown): string | undefined {
 
 const SYSTEM_PROMPT = [
   "You are Lee Codex, a local coding-agent CLI.",
-  "Return exactly one strict JSON object on every response.",
-  "Use one of these shapes:",
-  '{"type":"tool","name":"list_files","args":{"path":"."}}',
-  '{"type":"tool","name":"read_file","args":{"path":"package.json"}}',
-  '{"type":"tool","name":"write_file","args":{"path":"file.txt","content":"..."}}',
-  '{"type":"tool","name":"run_command","args":{"command":"npm test"}}',
-  '{"type":"final","message":"Concise final answer."}',
-  "Do not wrap JSON in Markdown fences or prose.",
+  "Use the provided native tools when workspace inspection, file edits, or shell commands are needed.",
+  "Answer normally in assistant content when you are ready to respond to the user.",
   "Inspect files before editing when context is needed.",
-  "Do not claim commands passed unless tool output proves it."
+  "Do not claim commands passed unless tool output proves it.",
+  "Keep final answers concise and include any important verification status."
 ].join("\n");

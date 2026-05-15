@@ -6,6 +6,7 @@ import {
   DEFAULT_COMMAND_TIMEOUT_MS,
   DEFAULT_MAX_FILES,
   DEFAULT_MAX_READ_BYTES,
+  type ChatToolDefinition,
   type ToolCall,
   type ToolResult
 } from "./types.js";
@@ -18,6 +19,90 @@ const SKIPPED_DIRECTORIES = new Set([
   "build",
   "coverage"
 ]);
+
+export const WORKSPACE_TOOL_DEFINITIONS: ChatToolDefinition[] = [
+  {
+    type: "function",
+    function: {
+      name: "list_files",
+      description:
+        "Recursively list files inside the workspace, skipping common heavy directories.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: {
+            type: "string",
+            description: "Workspace-relative directory or file path."
+          },
+          maxFiles: {
+            type: "integer",
+            minimum: 1,
+            description: "Maximum number of files to return."
+          }
+        },
+        additionalProperties: false
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_file",
+      description: "Read a UTF-8 file inside the workspace.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: {
+            type: "string",
+            description: "Workspace-relative file path."
+          }
+        },
+        required: ["path"],
+        additionalProperties: false
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "write_file",
+      description: "Create or replace a full UTF-8 file inside the workspace.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: {
+            type: "string",
+            description: "Workspace-relative file path."
+          },
+          content: {
+            type: "string",
+            description: "Full file content to write."
+          }
+        },
+        required: ["path", "content"],
+        additionalProperties: false
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_command",
+      description: "Run a shell command in the workspace.",
+      parameters: {
+        type: "object",
+        properties: {
+          command: {
+            type: "string",
+            description: "Shell command to execute."
+          }
+        },
+        required: ["command"],
+        additionalProperties: false
+      }
+    }
+  }
+];
 
 export interface ToolExecutorOptions {
   workspaceRoot: string;
