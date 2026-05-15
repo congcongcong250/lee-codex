@@ -285,8 +285,52 @@ describe("runAgentTurn", () => {
     });
 
     expect(steps).toEqual(["Step 1/15: list_files"]);
-    expect(debug.join("\n")).toContain("Assistant message:");
-    expect(debug.join("\n")).toContain("Tool result:");
+    expect(debug.join("\n")).toContain("Assistant content:");
+    expect(debug.join("\n")).toContain("Tool calls:");
+    expect(debug.join("\n")).toContain("Raw response metadata:");
+    expect(debug.join("\n")).toContain("Tool result (ok):");
+  });
+
+  test("records replayable native messages and events when a recorder is provided", async () => {
+    const recorder = new RecordingConversationRecorder();
+
+    const result = await runAgentTurn({
+      task: "list",
+      modelName: "fake",
+      model: new FakeModelClient([
+        toolCallMessage("call_list", "list_files", {}),
+        finalMessage("Done.")
+      ]),
+      tools: createToolExecutor({ workspaceRoot: workspace }),
+      maxSteps: 15,
+      recorder
+    });
+
+    expect(result.status).toBe("success");
+    expect(recorder.messages.at(-1)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "system" }),
+        expect.objectContaining({ role: "user", content: "list" }),
+        expect.objectContaining({
+          role: "assistant",
+          tool_calls: expect.arrayContaining([
+            expect.objectContaining({ id: "call_list" })
+          ])
+        }),
+        expect.objectContaining({
+          role: "tool",
+          tool_call_id: "call_list"
+        }),
+        expect.objectContaining({ role: "assistant", content: "Done." })
+      ])
+    );
+    expect(recorder.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "assistant_response", step: 1 }),
+        expect.objectContaining({ type: "tool_result", step: 1 }),
+        expect.objectContaining({ type: "turn_result", status: "success" })
+      ])
+    );
   });
 });
 
@@ -329,4 +373,19 @@ function lastMessage(messages: ChatMessage[]): ChatMessage {
     throw new Error("Expected at least one message");
   }
   return message;
+}
+
+class RecordingConversationRecorder {
+  readonly messages: ChatMessage[][] = [];
+  readonly events: Array<Record<string, unknown>> = [];
+
+  async recordMessages(messages: ChatMessage[]): Promise<void> {
+    this.messages.push(JSON.parse(JSON.stringify(messages)) as ChatMessage[]);
+  }
+
+  async recordEvent(event: Record<string, unknown>): Promise<void> {
+    this.events.push(event);
+  }
+
+  async finish(): Promise<void> {}
 }

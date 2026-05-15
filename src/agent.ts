@@ -2,6 +2,7 @@ import {
   resolveNativeResponse,
   type NativeResolvedToolCall
 } from "./resolvers/native.js";
+import type { ConversationRecorder } from "./conversationLog.js";
 import {
   silentLogger,
   type ChatMessage,
@@ -22,6 +23,7 @@ export interface AgentTurnOptions {
   sessionHistory?: SessionHistoryEntry[];
   verbose?: boolean;
   logger?: Logger;
+  recorder?: ConversationRecorder;
 }
 
 export type AgentTurnResult =
@@ -44,11 +46,22 @@ export async function runAgentTurn(
   const logger = options.logger ?? silentLogger;
   const messages = buildInitialMessages(options);
   const toolSummaries: string[] = [];
+  await options.recorder?.recordMessages(messages);
 
   for (let step = 1; step <= options.maxSteps; step += 1) {
     const response = await completeStep(options, messages);
 
     if (!response.ok) {
+      await options.recorder?.recordEvent({
+        type: "provider_error",
+        step,
+        error: response.error
+      });
+      await options.recorder?.recordEvent({
+        type: "turn_result",
+        status: "failed",
+        error: response.error
+      });
       return {
         status: "failed",
         error: response.error,
@@ -58,14 +71,33 @@ export async function runAgentTurn(
     }
 
     if (options.verbose) {
-      logger.debug(
-        `Assistant message:\n${JSON.stringify(response.value.message, null, 2)}`
-      );
+      logVerboseAssistantResponse(logger, response.value);
     }
+    await options.recorder?.recordEvent({
+      type: "assistant_response",
+      step,
+      message: response.value.message,
+      finishReason: response.value.finishReason ?? null,
+      raw: response.value.raw ?? null,
+      usage: response.value.usage ?? null
+    });
 
     const resolved = resolveNativeResponse(response.value);
 
     if (resolved.type === "failed") {
+      if (options.verbose) {
+        logger.debug(`Resolver error:\n${resolved.error}`);
+      }
+      await options.recorder?.recordEvent({
+        type: "resolver_error",
+        step,
+        error: resolved.error
+      });
+      await options.recorder?.recordEvent({
+        type: "turn_result",
+        status: "failed",
+        error: resolved.error
+      });
       return {
         status: "failed",
         error: resolved.error,
@@ -75,8 +107,15 @@ export async function runAgentTurn(
     }
 
     messages.push(resolved.assistantMessage);
+    await options.recorder?.recordMessages(messages);
 
     if (resolved.type === "final") {
+      await options.recorder?.recordEvent({
+        type: "turn_result",
+        status: "success",
+        message: resolved.message,
+        steps: step
+      });
       return {
         status: "success",
         message: resolved.message,
@@ -89,20 +128,60 @@ export async function runAgentTurn(
       const result = await executeResolvedToolCall(options, call, step, logger);
 
       if (options.verbose) {
-        logger.debug(`Tool result:\n${JSON.stringify(result, null, 2)}`);
+        logger.debug(
+          `Tool result (${result.ok ? "ok" : "error"}):\n${JSON.stringify(
+            result,
+            null,
+            2
+          )}`
+        );
       }
 
       toolSummaries.push(`${summarizeResolvedToolCall(call)} -> ${result.ok ? "ok" : "error"}`);
+      await options.recorder?.recordEvent({
+        type: "tool_result",
+        step,
+        toolCallId: call.id,
+        name: call.name,
+        result
+      });
       messages.push(buildToolResultMessage(call, result));
+      await options.recorder?.recordMessages(messages);
     }
   }
 
+  await options.recorder?.recordEvent({
+    type: "turn_result",
+    status: "incomplete",
+    error: `Agent stopped after ${options.maxSteps} steps without a final answer.`,
+    steps: options.maxSteps
+  });
   return {
     status: "incomplete",
     error: `Agent stopped after ${options.maxSteps} steps without a final answer.`,
     steps: options.maxSteps,
     toolSummaries
   };
+}
+
+function logVerboseAssistantResponse(
+  logger: Logger,
+  response: Awaited<ReturnType<ModelClient["complete"]>>
+): void {
+  logger.debug(`Assistant content:\n${JSON.stringify(response.message.content)}`);
+  logger.debug(
+    `Tool calls:\n${JSON.stringify(response.message.tool_calls ?? [], null, 2)}`
+  );
+  logger.debug(
+    `Raw response metadata:\n${JSON.stringify(
+      {
+        finishReason: response.finishReason ?? null,
+        usage: response.usage ?? null
+      },
+      null,
+      2
+    )}`
+  );
 }
 
 async function completeStep(

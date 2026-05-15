@@ -1,7 +1,13 @@
 import { Command, InvalidArgumentError } from "commander";
+import path from "node:path";
 import { runAgentTurn } from "./agent.js";
 import { createReadlineChatIO, runChatSession, type ChatIO } from "./chat.js";
+import {
+  createConversationLog,
+  type ConversationRecorder
+} from "./conversationLog.js";
 import { createModelClient, getProviderConfig } from "./model.js";
+import { colorizeVerboseDebugMessage } from "./terminal.js";
 import { createToolExecutor } from "./tools.js";
 import {
   DEFAULT_COMMAND_TIMEOUT_MS,
@@ -134,9 +140,17 @@ async function runSingleShot(config: CliConfig): Promise<number> {
   const io = process.stdin.isTTY
     ? createReadlineChatIO(process.stdin, process.stdout)
     : undefined;
+  const recorder = await createVerboseConversationLog(config);
 
   try {
-    const result = await runConfiguredTurn(config, config.task ?? "", [], io);
+    const result = await runConfiguredTurn(
+      config,
+      config.task ?? "",
+      [],
+      io,
+      recorder
+    );
+    await finishConversationLog(recorder, result);
 
     if (result.status === "success") {
       process.stdout.write(`${result.message}\n`);
@@ -145,6 +159,12 @@ async function runSingleShot(config: CliConfig): Promise<number> {
 
     process.stderr.write(`${result.error}\n`);
     return 1;
+  } catch (error) {
+    await recorder?.finish(
+      "failed",
+      error instanceof Error ? error.message : String(error)
+    );
+    throw error;
   } finally {
     io?.close();
   }
@@ -152,11 +172,31 @@ async function runSingleShot(config: CliConfig): Promise<number> {
 
 async function runInteractive(config: CliConfig): Promise<number> {
   const io = createReadlineChatIO(process.stdin, process.stdout);
+  const recorder = await createVerboseConversationLog(config);
 
-  await runChatSession({
-    io,
-    runTurn: (task, history) => runConfiguredTurn(config, task, history, io)
-  });
+  try {
+    await runChatSession({
+      io,
+      runTurn: async (task, history) => {
+        try {
+          return await runConfiguredTurn(config, task, history, io, recorder);
+        } catch (error) {
+          await recorder?.recordEvent({
+            type: "turn_exception",
+            error: error instanceof Error ? error.message : String(error)
+          });
+          throw error;
+        }
+      }
+    });
+    await recorder?.finish("success");
+  } catch (error) {
+    await recorder?.finish(
+      "failed",
+      error instanceof Error ? error.message : String(error)
+    );
+    throw error;
+  }
 
   return 0;
 }
@@ -165,7 +205,8 @@ async function runConfiguredTurn(
   config: CliConfig,
   task: string,
   history: SessionHistoryEntry[],
-  io?: ChatIO
+  io?: ChatIO,
+  recorder?: ConversationRecorder
 ) {
   const providerConfig = getProviderConfig({
     provider: config.provider,
@@ -200,21 +241,57 @@ async function runConfiguredTurn(
     maxSteps: config.maxSteps,
     sessionHistory: history,
     verbose: config.verbose,
-    logger: createConsoleLogger(config.verbose)
+    logger: createConsoleLogger(config.verbose),
+    ...(recorder ? { recorder } : {})
   });
 }
 
 function createConsoleLogger(verbose: boolean): Logger {
+  const colorsEnabled = Boolean(process.stderr.isTTY && !process.env.NO_COLOR);
+
   return {
     step: (message) => process.stdout.write(`${message}\n`),
     debug: (message) => {
       if (verbose) {
-        process.stderr.write(`${message}\n`);
+        process.stderr.write(
+          `${colorizeVerboseDebugMessage(message, colorsEnabled)}\n`
+        );
       }
     },
     info: (message) => process.stdout.write(`${message}\n`),
     error: (message) => process.stderr.write(`${message}\n`)
   };
+}
+
+async function createVerboseConversationLog(
+  config: CliConfig
+): Promise<ConversationRecorder | undefined> {
+  if (!config.verbose) {
+    return undefined;
+  }
+
+  return createConversationLog({
+    logDir: path.join(config.cwd, "log"),
+    provider: config.provider,
+    model: config.model ?? "(model unresolved)",
+    cwd: config.cwd
+  });
+}
+
+async function finishConversationLog(
+  recorder: ConversationRecorder | undefined,
+  result: Awaited<ReturnType<typeof runAgentTurn>>
+): Promise<void> {
+  if (!recorder) {
+    return;
+  }
+
+  if (result.status === "success") {
+    await recorder.finish("success");
+    return;
+  }
+
+  await recorder.finish(result.status, result.error);
 }
 
 function parseProvider(value: string): ProviderName {
