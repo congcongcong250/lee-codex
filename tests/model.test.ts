@@ -380,7 +380,7 @@ describe("createModelClient", () => {
     expect(client).toBeInstanceOf(OpenAICompatibleClient);
   });
 
-  test("OpenRouter client disables reasoning and requires native parameters by default", async () => {
+  test("OpenRouter client requires native parameters without disabling reasoning", async () => {
     const calls: RequestInit[] = [];
     const fetchImpl = (async (
       _input: Parameters<typeof fetch>[0],
@@ -436,10 +436,7 @@ describe("createModelClient", () => {
     expect(body.tools).toHaveLength(1);
     expect(body.tool_choice).toBe("auto");
     expect(body).not.toHaveProperty("parallel_tool_calls");
-    expect(body.reasoning).toEqual({
-      effort: "none",
-      exclude: true
-    });
+    expect(body).not.toHaveProperty("reasoning");
     expect(body.provider).toEqual({
       require_parameters: true
     });

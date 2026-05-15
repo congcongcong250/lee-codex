@@ -50,10 +50,6 @@ export const OPENAI_COMPATIBLE_PROVIDERS = {
     defaultModel: DEFAULT_OPENROUTER_MODEL,
     modelPresets: OPENROUTER_MODEL_PRESETS,
     extraBody: {
-      reasoning: {
-        effort: "none",
-        exclude: true
-      },
       provider: {
         require_parameters: true
       }

@@ -64,17 +64,15 @@ OpenRouter requests should also include:
 
 ```json
 {
-  "reasoning": {
-    "effort": "none",
-    "exclude": true
-  },
   "provider": {
     "require_parameters": true
   }
 }
 ```
 
-`require_parameters` prevents routing to providers that would ignore native tool-calling parameters. Reasoning suppression prevents reasoning-only responses from replacing the assistant content/tool-call payload.
+`require_parameters` prevents routing to providers that would ignore native tool-calling parameters.
+
+OpenRouter should not disable reasoning by default. Some reasoning models require reasoning and reject `reasoning: { "effort": "none" }`. The native resolver preserves provider-specific assistant fields such as `reasoning` or `reasoning_details` in the assistant message instead of trying to suppress them.
 
 OpenRouter should omit `parallel_tool_calls` by default even though the agent executes returned tool calls sequentially. OpenRouter endpoint support varies by model and provider; with `require_parameters: true`, sending an unsupported optional parameter can produce a 404 routing error even when the endpoint supports `tools` and `tool_choice`.
 
