@@ -17,6 +17,7 @@ export interface ProviderDefinition {
   apiKeyEnv: string;
   defaultModel?: string;
   modelPresets: readonly string[];
+  extraBody?: Record<string, unknown>;
 }
 
 export interface ProviderConfig {
@@ -24,6 +25,7 @@ export interface ProviderConfig {
   baseURL: string;
   apiKey: string;
   model: string;
+  extraBody?: Record<string, unknown>;
 }
 
 export interface ProviderConfigInput {
@@ -32,13 +34,23 @@ export interface ProviderConfigInput {
   env?: Record<string, string | undefined>;
 }
 
+export interface CreateModelClientOptions {
+  fetchImpl?: typeof fetch;
+}
+
 export const OPENAI_COMPATIBLE_PROVIDERS = {
   openrouter: {
     provider: "openrouter",
     baseURL: "https://openrouter.ai/api/v1",
     apiKeyEnv: "OPENROUTER_API_KEY",
     defaultModel: DEFAULT_OPENROUTER_MODEL,
-    modelPresets: OPENROUTER_MODEL_PRESETS
+    modelPresets: OPENROUTER_MODEL_PRESETS,
+    extraBody: {
+      reasoning: {
+        effort: "none",
+        exclude: true
+      }
+    }
   },
   openai: {
     provider: "openai",
@@ -70,15 +82,21 @@ export function getProviderConfig(input: ProviderConfigInput = {}): ProviderConf
     provider,
     baseURL: definition.baseURL,
     apiKey,
-    model
+    model,
+    ...("extraBody" in definition ? { extraBody: definition.extraBody } : {})
   };
 }
 
-export function createModelClient(input: ProviderConfigInput = {}): ModelClient {
+export function createModelClient(
+  input: ProviderConfigInput = {},
+  options: CreateModelClientOptions = {}
+): ModelClient {
   const config = getProviderConfig(input);
   return new OpenAICompatibleClient({
     apiKey: config.apiKey,
-    baseURL: config.baseURL
+    baseURL: config.baseURL,
+    ...(config.extraBody ? { extraBody: config.extraBody } : {}),
+    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {})
   });
 }
 

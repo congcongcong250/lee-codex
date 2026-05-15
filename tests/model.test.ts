@@ -84,14 +84,16 @@ describe("FakeModelClient", () => {
 
 describe("OpenAICompatibleClient", () => {
   test("sends non-streaming chat completions requests", async () => {
-    const fetchImpl = vi.fn(async () => {
+    const fetchImpl = vi.fn(
+      async (_input: Parameters<typeof fetch>[0], _init?: RequestInit) => {
       return new Response(
         JSON.stringify({
           choices: [{ message: { content: '{"type":"final","message":"ok"}' } }]
         }),
         { status: 200, headers: { "content-type": "application/json" } }
       );
-    });
+      }
+    );
     const client = new OpenAICompatibleClient({
       apiKey: "key",
       baseURL: "https://example.test/v1",
@@ -116,6 +118,48 @@ describe("OpenAICompatibleClient", () => {
           model: "model-id",
           messages: [{ role: "user", content: "hi" }],
           stream: false
+        })
+      })
+    );
+  });
+
+  test("merges provider extra body into chat completion requests", async () => {
+    const fetchImpl = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: '{"type":"final","message":"ok"}' } }]
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
+    const client = new OpenAICompatibleClient({
+      apiKey: "key",
+      baseURL: "https://example.test/v1",
+      fetchImpl,
+      extraBody: {
+        reasoning: {
+          effort: "none",
+          exclude: true
+        }
+      }
+    });
+
+    await client.complete({
+      model: "model-id",
+      messages: [{ role: "user", content: "hi" }]
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://example.test/v1/chat/completions",
+      expect.objectContaining({
+        body: JSON.stringify({
+          model: "model-id",
+          messages: [{ role: "user", content: "hi" }],
+          stream: false,
+          reasoning: {
+            effort: "none",
+            exclude: true
+          }
         })
       })
     );
@@ -150,7 +194,7 @@ describe("OpenAICompatibleClient", () => {
     });
   });
 
-  test("explains null provider message content with response context", async () => {
+  test("turns null provider message content into an empty protocol response", async () => {
     const client = new OpenAICompatibleClient({
       apiKey: "key",
       baseURL: "https://example.test/v1",
@@ -165,7 +209,9 @@ describe("OpenAICompatibleClient", () => {
 
     await expect(
       client.complete({ model: "model-id", messages: [] })
-    ).rejects.toThrow(/Provider response message content was null/);
+    ).resolves.toMatchObject({
+      content: ""
+    });
   });
 
   test("surfaces provider errors", async () => {
@@ -189,5 +235,38 @@ describe("createModelClient", () => {
     });
 
     expect(client).toBeInstanceOf(OpenAICompatibleClient);
+  });
+
+  test("OpenRouter client disables returned reasoning by default", async () => {
+    const calls: RequestInit[] = [];
+    const fetchImpl = (async (
+      _input: Parameters<typeof fetch>[0],
+      init?: RequestInit
+    ) => {
+      calls.push(init ?? {});
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: '{"type":"final","message":"ok"}' } }]
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }) as typeof fetch;
+    const config = getProviderConfig({
+      provider: "openrouter",
+      env: { OPENROUTER_API_KEY: "router-key" }
+    });
+    const client = createModelClient(
+      { provider: "openrouter", env: { OPENROUTER_API_KEY: "router-key" } },
+      { fetchImpl }
+    );
+
+    await client.complete({ model: config.model, messages: [] });
+
+    const init = calls[0];
+    const body = JSON.parse(String(init?.body));
+    expect(body.reasoning).toEqual({
+      effort: "none",
+      exclude: true
+    });
   });
 });

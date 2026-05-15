@@ -4,6 +4,7 @@ export interface OpenAICompatibleClientOptions {
   apiKey: string;
   baseURL: string;
   fetchImpl?: typeof fetch;
+  extraBody?: Record<string, unknown>;
 }
 
 export class OpenAICompatibleClient implements ModelClient {
@@ -25,7 +26,8 @@ export class OpenAICompatibleClient implements ModelClient {
         body: JSON.stringify({
           model: request.model,
           messages: request.messages,
-          stream: false
+          stream: false,
+          ...(this.options.extraBody ?? {})
         })
       }
     );
@@ -104,9 +106,7 @@ function extractMessageContent(
   }
 
   if (content === null) {
-    throw new Error(
-      `Provider response message content was null. Response preview: ${previewJson(raw)}`
-    );
+    return "";
   }
 
   throw new Error(
