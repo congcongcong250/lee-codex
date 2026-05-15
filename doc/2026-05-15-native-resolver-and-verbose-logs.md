@@ -15,7 +15,7 @@ The provider request must use native tool calling fields:
 - `messages`: OpenAI-compatible conversation messages.
 - `tools`: function tool definitions for `list_files`, `read_file`, `write_file`, and `run_command`.
 - `tool_choice: "auto"`: the model may call tools or answer normally.
-- `parallel_tool_calls: false`: request sequential tool behavior for v1.
+- `parallel_tool_calls: false` when the provider supports it: request sequential tool behavior for v1.
 
 The resolver must handle assistant messages according to the OpenAI Chat Completions shape:
 
@@ -75,6 +75,8 @@ OpenRouter requests should also include:
 ```
 
 `require_parameters` prevents routing to providers that would ignore native tool-calling parameters. Reasoning suppression prevents reasoning-only responses from replacing the assistant content/tool-call payload.
+
+OpenRouter should omit `parallel_tool_calls` by default even though the agent executes returned tool calls sequentially. OpenRouter endpoint support varies by model and provider; with `require_parameters: true`, sending an unsupported optional parameter can produce a 404 routing error even when the endpoint supports `tools` and `tool_choice`.
 
 ## Verbose Logging
 

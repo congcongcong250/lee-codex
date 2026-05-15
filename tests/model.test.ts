@@ -410,10 +410,32 @@ describe("createModelClient", () => {
       { fetchImpl }
     );
 
-    await client.complete({ model: config.model, messages: [] });
+    await client.complete({
+      model: config.model,
+      messages: [],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "list_files",
+            description: "List files",
+            parameters: {
+              type: "object",
+              properties: {},
+              additionalProperties: false
+            }
+          }
+        }
+      ],
+      toolChoice: "auto",
+      parallelToolCalls: false
+    });
 
     const init = calls[0];
     const body = JSON.parse(String(init?.body));
+    expect(body.tools).toHaveLength(1);
+    expect(body.tool_choice).toBe("auto");
+    expect(body).not.toHaveProperty("parallel_tool_calls");
     expect(body.reasoning).toEqual({
       effort: "none",
       exclude: true
@@ -421,5 +443,60 @@ describe("createModelClient", () => {
     expect(body.provider).toEqual({
       require_parameters: true
     });
+  });
+
+  test("OpenAI client keeps explicit parallel tool call control", async () => {
+    const calls: RequestInit[] = [];
+    const fetchImpl = (async (
+      _input: Parameters<typeof fetch>[0],
+      init?: RequestInit
+    ) => {
+      calls.push(init ?? {});
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { role: "assistant", content: "ok" } }]
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }) as typeof fetch;
+    const config = getProviderConfig({
+      provider: "openai",
+      model: "gpt-test",
+      env: { OPENAI_API_KEY: "openai-key" }
+    });
+    const client = createModelClient(
+      {
+        provider: "openai",
+        model: "gpt-test",
+        env: { OPENAI_API_KEY: "openai-key" }
+      },
+      { fetchImpl }
+    );
+
+    await client.complete({
+      model: config.model,
+      messages: [],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "list_files",
+            description: "List files",
+            parameters: {
+              type: "object",
+              properties: {},
+              additionalProperties: false
+            }
+          }
+        }
+      ],
+      toolChoice: "auto",
+      parallelToolCalls: false
+    });
+
+    const init = calls[0];
+    const body = JSON.parse(String(init?.body));
+    expect(body.parallel_tool_calls).toBe(false);
+    expect(body.provider).toBeUndefined();
   });
 });

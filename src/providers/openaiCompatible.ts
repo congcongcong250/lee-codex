@@ -5,6 +5,11 @@ export interface OpenAICompatibleClientOptions {
   baseURL: string;
   fetchImpl?: typeof fetch;
   extraBody?: Record<string, unknown>;
+  parameterPolicy?: OpenAICompatibleParameterPolicy;
+}
+
+export interface OpenAICompatibleParameterPolicy {
+  parallelToolCalls?: "send" | "omit";
 }
 
 export class OpenAICompatibleClient implements ModelClient {
@@ -29,7 +34,8 @@ export class OpenAICompatibleClient implements ModelClient {
           stream: false,
           ...(request.tools ? { tools: request.tools } : {}),
           ...(request.toolChoice ? { tool_choice: request.toolChoice } : {}),
-          ...(request.parallelToolCalls !== undefined
+          ...(request.parallelToolCalls !== undefined &&
+          this.options.parameterPolicy?.parallelToolCalls !== "omit"
             ? { parallel_tool_calls: request.parallelToolCalls }
             : {}),
           ...(this.options.extraBody ?? {})

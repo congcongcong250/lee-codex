@@ -9,6 +9,7 @@ import {
   type ProviderName
 } from "./types.js";
 import { OpenAICompatibleClient } from "./providers/openaiCompatible.js";
+import type { OpenAICompatibleParameterPolicy } from "./providers/openaiCompatible.js";
 
 export type { ModelClient } from "./types.js";
 
@@ -19,6 +20,7 @@ export interface ProviderDefinition {
   defaultModel?: string;
   modelPresets: readonly string[];
   extraBody?: Record<string, unknown>;
+  parameterPolicy?: OpenAICompatibleParameterPolicy;
 }
 
 export interface ProviderConfig {
@@ -27,6 +29,7 @@ export interface ProviderConfig {
   apiKey: string;
   model: string;
   extraBody?: Record<string, unknown>;
+  parameterPolicy?: OpenAICompatibleParameterPolicy;
 }
 
 export interface ProviderConfigInput {
@@ -54,6 +57,9 @@ export const OPENAI_COMPATIBLE_PROVIDERS = {
       provider: {
         require_parameters: true
       }
+    },
+    parameterPolicy: {
+      parallelToolCalls: "omit"
     }
   },
   openai: {
@@ -87,7 +93,10 @@ export function getProviderConfig(input: ProviderConfigInput = {}): ProviderConf
     baseURL: definition.baseURL,
     apiKey,
     model,
-    ...("extraBody" in definition ? { extraBody: definition.extraBody } : {})
+    ...("extraBody" in definition ? { extraBody: definition.extraBody } : {}),
+    ...("parameterPolicy" in definition
+      ? { parameterPolicy: definition.parameterPolicy }
+      : {})
   };
 }
 
@@ -100,6 +109,7 @@ export function createModelClient(
     apiKey: config.apiKey,
     baseURL: config.baseURL,
     ...(config.extraBody ? { extraBody: config.extraBody } : {}),
+    ...(config.parameterPolicy ? { parameterPolicy: config.parameterPolicy } : {}),
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {})
   });
 }
