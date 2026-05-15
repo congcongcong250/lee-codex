@@ -121,6 +121,53 @@ describe("OpenAICompatibleClient", () => {
     );
   });
 
+  test("concatenates provider text content parts", async () => {
+    const client = new OpenAICompatibleClient({
+      apiKey: "key",
+      baseURL: "https://example.test/v1",
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: [
+                    { type: "text", text: '{"type":"final",' },
+                    { type: "text", text: '"message":"ok"}' }
+                  ]
+                }
+              }
+            ]
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )
+    });
+
+    await expect(
+      client.complete({ model: "model-id", messages: [] })
+    ).resolves.toMatchObject({
+      content: '{"type":"final","message":"ok"}'
+    });
+  });
+
+  test("explains null provider message content with response context", async () => {
+    const client = new OpenAICompatibleClient({
+      apiKey: "key",
+      baseURL: "https://example.test/v1",
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: null, reasoning: "thinking" } }]
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )
+    });
+
+    await expect(
+      client.complete({ model: "model-id", messages: [] })
+    ).rejects.toThrow(/Provider response message content was null/);
+  });
+
   test("surfaces provider errors", async () => {
     const client = new OpenAICompatibleClient({
       apiKey: "key",

@@ -62,13 +62,63 @@ function extractContent(raw: unknown): string {
     throw new Error("Provider response did not include a message.");
   }
 
-  if (typeof first.message.content !== "string") {
-    throw new Error("Provider response message content must be a string.");
-  }
-
-  return first.message.content;
+  return extractMessageContent(first.message, raw);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function extractMessageContent(
+  message: Record<string, unknown>,
+  raw: unknown
+): string {
+  const content = message.content;
+
+  if (typeof content === "string") {
+    return content;
+  }
+
+  if (Array.isArray(content)) {
+    const text = content
+      .map((part) => {
+        if (typeof part === "string") {
+          return part;
+        }
+
+        if (isRecord(part) && typeof part.text === "string") {
+          return part.text;
+        }
+
+        return "";
+      })
+      .join("");
+
+    if (text.length > 0) {
+      return text;
+    }
+
+    throw new Error(
+      `Provider response message content parts did not include text. Response preview: ${previewJson(raw)}`
+    );
+  }
+
+  if (content === null) {
+    throw new Error(
+      `Provider response message content was null. Response preview: ${previewJson(raw)}`
+    );
+  }
+
+  throw new Error(
+    `Provider response message content must be a string or text-part array. Response preview: ${previewJson(raw)}`
+  );
+}
+
+function previewJson(value: unknown): string {
+  const json = JSON.stringify(value);
+  if (!json) {
+    return String(value);
+  }
+
+  return json.length > 1000 ? `${json.slice(0, 1000)}...` : json;
 }
