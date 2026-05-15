@@ -2,6 +2,7 @@ import {
   DEFAULT_OPENROUTER_MODEL,
   DEFAULT_PROVIDER,
   OPENROUTER_MODEL_PRESETS,
+  type AssistantChatMessage,
   type ModelClient,
   type ModelRequest,
   type ModelResponse,
@@ -49,6 +50,9 @@ export const OPENAI_COMPATIBLE_PROVIDERS = {
       reasoning: {
         effort: "none",
         exclude: true
+      },
+      provider: {
+        require_parameters: true
       }
     }
   },
@@ -103,15 +107,19 @@ export function createModelClient(
 export class FakeModelClient implements ModelClient {
   private nextIndex = 0;
 
-  constructor(private readonly responses: string[]) {}
+  constructor(private readonly responses: Array<string | AssistantChatMessage>) {}
 
   async complete(_request: ModelRequest): Promise<ModelResponse> {
-    const content = this.responses[this.nextIndex];
-    if (content === undefined) {
+    const response = this.responses[this.nextIndex];
+    if (response === undefined) {
       throw new Error("No fake model responses remain.");
     }
 
     this.nextIndex += 1;
-    return { content };
+    const message =
+      typeof response === "string"
+        ? ({ role: "assistant", content: response } as const)
+        : response;
+    return { message, content: message.content };
   }
 }

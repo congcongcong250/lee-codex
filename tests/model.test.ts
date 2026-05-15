@@ -66,10 +66,18 @@ describe("FakeModelClient", () => {
     ]);
 
     await expect(model.complete({ model: "fake", messages: [] })).resolves.toEqual({
-      content: '{"type":"tool","name":"list_files","args":{}}'
+      content: '{"type":"tool","name":"list_files","args":{}}',
+      message: {
+        role: "assistant",
+        content: '{"type":"tool","name":"list_files","args":{}}'
+      }
     });
     await expect(model.complete({ model: "fake", messages: [] })).resolves.toEqual({
-      content: '{"type":"final","message":"Done."}'
+      content: '{"type":"final","message":"Done."}',
+      message: {
+        role: "assistant",
+        content: '{"type":"final","message":"Done."}'
+      }
     });
   });
 
@@ -88,7 +96,14 @@ describe("OpenAICompatibleClient", () => {
       async (_input: Parameters<typeof fetch>[0], _init?: RequestInit) => {
       return new Response(
         JSON.stringify({
-          choices: [{ message: { content: '{"type":"final","message":"ok"}' } }]
+          choices: [
+            {
+              message: {
+                role: "assistant",
+                content: '{"type":"final","message":"ok"}'
+              }
+            }
+          ]
         }),
         { status: 200, headers: { "content-type": "application/json" } }
       );
@@ -123,11 +138,126 @@ describe("OpenAICompatibleClient", () => {
     );
   });
 
+  test("sends native tool calling fields when tools are provided", async () => {
+    const calls: RequestInit[] = [];
+    const fetchImpl = (async (
+      _input: Parameters<typeof fetch>[0],
+      init?: RequestInit
+    ) => {
+      calls.push(init ?? {});
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { role: "assistant", content: "ok" } }]
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }) as typeof fetch;
+    const client = new OpenAICompatibleClient({
+      apiKey: "key",
+      baseURL: "https://example.test/v1",
+      fetchImpl
+    });
+
+    await client.complete({
+      model: "model-id",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "read_file",
+            description: "Read a file",
+            parameters: {
+              type: "object",
+              properties: { path: { type: "string" } },
+              required: ["path"],
+              additionalProperties: false
+            }
+          }
+        }
+      ],
+      toolChoice: "auto",
+      parallelToolCalls: false
+    });
+
+    const init = calls[0];
+    const body = JSON.parse(String(init?.body));
+    expect(body.tools).toEqual([
+      {
+        type: "function",
+        function: {
+          name: "read_file",
+          description: "Read a file",
+          parameters: {
+            type: "object",
+            properties: { path: { type: "string" } },
+            required: ["path"],
+            additionalProperties: false
+          }
+        }
+      }
+    ]);
+    expect(body.tool_choice).toBe("auto");
+    expect(body.parallel_tool_calls).toBe(false);
+  });
+
+  test("returns full assistant message and finish reason", async () => {
+    const rawResponse = {
+      id: "chatcmpl-test",
+      choices: [
+        {
+          finish_reason: "tool_calls",
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_123",
+                type: "function",
+                function: {
+                  name: "read_file",
+                  arguments: "{\"path\":\"README.md\"}"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      usage: { total_tokens: 10 }
+    };
+    const client = new OpenAICompatibleClient({
+      apiKey: "key",
+      baseURL: "https://example.test/v1",
+      fetchImpl: async () =>
+        new Response(JSON.stringify(rawResponse), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+    });
+
+    await expect(
+      client.complete({ model: "model-id", messages: [] })
+    ).resolves.toMatchObject({
+      message: rawResponse.choices[0]?.message,
+      content: null,
+      finishReason: "tool_calls",
+      raw: rawResponse,
+      usage: rawResponse.usage
+    });
+  });
+
   test("merges provider extra body into chat completion requests", async () => {
     const fetchImpl = vi.fn(async () => {
       return new Response(
         JSON.stringify({
-          choices: [{ message: { content: '{"type":"final","message":"ok"}' } }]
+          choices: [
+            {
+              message: {
+                role: "assistant",
+                content: '{"type":"final","message":"ok"}'
+              }
+            }
+          ]
         }),
         { status: 200, headers: { "content-type": "application/json" } }
       );
@@ -175,6 +305,7 @@ describe("OpenAICompatibleClient", () => {
             choices: [
               {
                 message: {
+                  role: "assistant",
                   content: [
                     { type: "text", text: '{"type":"final",' },
                     { type: "text", text: '"message":"ok"}' }
@@ -194,14 +325,22 @@ describe("OpenAICompatibleClient", () => {
     });
   });
 
-  test("turns null provider message content into an empty protocol response", async () => {
+  test("preserves null provider message content", async () => {
     const client = new OpenAICompatibleClient({
       apiKey: "key",
       baseURL: "https://example.test/v1",
       fetchImpl: async () =>
         new Response(
           JSON.stringify({
-            choices: [{ message: { content: null, reasoning: "thinking" } }]
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: null,
+                  reasoning: "thinking"
+                }
+              }
+            ]
           }),
           { status: 200, headers: { "content-type": "application/json" } }
         )
@@ -210,7 +349,11 @@ describe("OpenAICompatibleClient", () => {
     await expect(
       client.complete({ model: "model-id", messages: [] })
     ).resolves.toMatchObject({
-      content: ""
+      content: null,
+      message: {
+        role: "assistant",
+        content: null
+      }
     });
   });
 
@@ -237,7 +380,7 @@ describe("createModelClient", () => {
     expect(client).toBeInstanceOf(OpenAICompatibleClient);
   });
 
-  test("OpenRouter client disables returned reasoning by default", async () => {
+  test("OpenRouter client disables reasoning and requires native parameters by default", async () => {
     const calls: RequestInit[] = [];
     const fetchImpl = (async (
       _input: Parameters<typeof fetch>[0],
@@ -246,7 +389,14 @@ describe("createModelClient", () => {
       calls.push(init ?? {});
       return new Response(
         JSON.stringify({
-          choices: [{ message: { content: '{"type":"final","message":"ok"}' } }]
+          choices: [
+            {
+              message: {
+                role: "assistant",
+                content: '{"type":"final","message":"ok"}'
+              }
+            }
+          ]
         }),
         { status: 200, headers: { "content-type": "application/json" } }
       );
@@ -267,6 +417,9 @@ describe("createModelClient", () => {
     expect(body.reasoning).toEqual({
       effort: "none",
       exclude: true
+    });
+    expect(body.provider).toEqual({
+      require_parameters: true
     });
   });
 });

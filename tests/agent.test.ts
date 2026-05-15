@@ -36,8 +36,10 @@ class RecordingModel implements ModelClient {
       throw new Error("No response");
     }
 
+    const content = typeof response === "function" ? response(request) : response;
     return {
-      content: typeof response === "function" ? response(request) : response
+      message: { role: "assistant", content },
+      content
     };
   }
 }

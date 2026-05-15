@@ -27,6 +27,11 @@ export class OpenAICompatibleClient implements ModelClient {
           model: request.model,
           messages: request.messages,
           stream: false,
+          ...(request.tools ? { tools: request.tools } : {}),
+          ...(request.toolChoice ? { tool_choice: request.toolChoice } : {}),
+          ...(request.parallelToolCalls !== undefined
+            ? { parallel_tool_calls: request.parallelToolCalls }
+            : {}),
           ...(this.options.extraBody ?? {})
         })
       }
@@ -40,8 +45,7 @@ export class OpenAICompatibleClient implements ModelClient {
     }
 
     const raw = (await response.json()) as unknown;
-    const content = extractContent(raw);
-    return { content, raw };
+    return extractModelResponse(raw);
   }
 }
 
@@ -49,7 +53,7 @@ function trimTrailingSlash(value: string): string {
   return value.endsWith("/") ? value.slice(0, -1) : value;
 }
 
-function extractContent(raw: unknown): string {
+function extractModelResponse(raw: unknown): ModelResponse {
   if (!isRecord(raw)) {
     throw new Error("Provider response must be a JSON object.");
   }
@@ -64,19 +68,57 @@ function extractContent(raw: unknown): string {
     throw new Error("Provider response did not include a message.");
   }
 
-  return extractMessageContent(first.message, raw);
+  const message = extractAssistantMessage(first.message, raw);
+  const finishReason =
+    typeof first.finish_reason === "string" || first.finish_reason === null
+      ? first.finish_reason
+      : undefined;
+
+  return {
+    message,
+    content: message.content,
+    ...(finishReason !== undefined ? { finishReason } : {}),
+    raw,
+    ...("usage" in raw ? { usage: raw.usage } : {})
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function extractMessageContent(
+function extractAssistantMessage(
   message: Record<string, unknown>,
   raw: unknown
-): string {
-  const content = message.content;
+): ModelResponse["message"] {
+  if (message.role !== "assistant") {
+    throw new Error(
+      `Provider response message role must be assistant. Response preview: ${previewJson(raw)}`
+    );
+  }
 
+  const content = message.content;
+  const normalizedContent = extractMessageContent(content, raw);
+  const normalizedMessage: ModelResponse["message"] = {
+    ...message,
+    role: "assistant",
+    content: normalizedContent
+  };
+
+  if ("tool_calls" in message) {
+    if (message.tool_calls !== null && !Array.isArray(message.tool_calls)) {
+      throw new Error(
+        `Provider response message tool_calls must be an array or null. Response preview: ${previewJson(raw)}`
+      );
+    }
+
+    normalizedMessage.tool_calls = message.tool_calls;
+  }
+
+  return normalizedMessage;
+}
+
+function extractMessageContent(content: unknown, raw: unknown): string | null {
   if (typeof content === "string") {
     return content;
   }
@@ -106,7 +148,11 @@ function extractMessageContent(
   }
 
   if (content === null) {
-    return "";
+    return null;
+  }
+
+  if (content === undefined) {
+    return null;
   }
 
   throw new Error(

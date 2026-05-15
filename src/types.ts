@@ -16,21 +16,83 @@ export type AgentAction =
   | { type: "tool"; name: string; args: Record<string, unknown> }
   | { type: "final"; message: string };
 
-export type ChatRole = "system" | "user" | "assistant";
+export type ChatRole = "system" | "user" | "assistant" | "tool";
 
-export interface ChatMessage {
-  role: ChatRole;
+export interface SystemChatMessage {
+  role: "system";
   content: string;
 }
+
+export interface UserChatMessage {
+  role: "user";
+  content: string;
+}
+
+export interface ChatToolCallFunction {
+  name: string;
+  arguments: string;
+}
+
+export interface ChatToolCall {
+  id: string;
+  type: "function";
+  function: ChatToolCallFunction;
+}
+
+export interface AssistantChatMessage {
+  role: "assistant";
+  content: string | null;
+  tool_calls?: ChatToolCall[] | null;
+  [key: string]: unknown;
+}
+
+export interface ToolChatMessage {
+  role: "tool";
+  content: string;
+  tool_call_id: string;
+  name?: string;
+}
+
+export type ChatMessage =
+  | SystemChatMessage
+  | UserChatMessage
+  | AssistantChatMessage
+  | ToolChatMessage;
+
+export interface ChatToolDefinition {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+export type ChatToolChoice =
+  | "none"
+  | "auto"
+  | "required"
+  | {
+      type: "function";
+      function: {
+        name: string;
+      };
+    };
 
 export interface ModelRequest {
   messages: ChatMessage[];
   model: string;
+  tools?: ChatToolDefinition[];
+  toolChoice?: ChatToolChoice;
+  parallelToolCalls?: boolean;
 }
 
 export interface ModelResponse {
-  content: string;
+  message: AssistantChatMessage;
+  content: string | null;
+  finishReason?: string | null;
   raw?: unknown;
+  usage?: unknown;
 }
 
 export interface ModelClient {

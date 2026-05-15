@@ -121,8 +121,8 @@ async function requestAction(
       model: options.modelName,
       messages
     });
-    firstRaw = response.content;
-    return { ok: true, action: parseAgentAction(response.content), raw: response.content };
+    firstRaw = response.content ?? "";
+    return { ok: true, action: parseAgentAction(firstRaw), raw: firstRaw };
   } catch (error) {
     if (!isProtocolParseError(error)) {
       return {
@@ -145,10 +145,11 @@ async function requestAction(
         model: options.modelName,
         messages: repairMessages
       });
+      const repairRaw = repairResponse.content ?? "";
       return {
         ok: true,
-        action: parseAgentAction(repairResponse.content),
-        raw: repairResponse.content
+        action: parseAgentAction(repairRaw),
+        raw: repairRaw
       };
     } catch (repairError) {
       return {
