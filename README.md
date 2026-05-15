@@ -1,6 +1,6 @@
 # Lee Codex
 
-Lee Codex is a small local coding-agent CLI. It runs a direct JSON-action loop against an OpenAI-compatible provider, executes a limited set of workspace tools, and supports both single-shot tasks and a simple interactive chat.
+Lee Codex is a small local coding-agent CLI. It uses native OpenAI-compatible Chat Completions tool calling, executes a limited set of workspace tools, and supports both single-shot tasks and a simple interactive chat.
 
 ## Install
 
@@ -76,7 +76,7 @@ Interactive commands:
 --max-read-bytes <number>    Maximum bytes read from one file. Defaults to 200000.
 --command-timeout-ms <n>     Shell command timeout. Defaults to 30000.
 --yes                        Approve write_file and run_command tool calls.
---verbose                    Show raw model JSON and tool-result debug output.
+--verbose                    Show colored debug output and write a JSON conversation log.
 ```
 
 ## Tools
@@ -90,23 +90,26 @@ The v1 agent can request exactly these tools:
 
 `write_file` and `run_command` ask for confirmation unless `--yes` is set. Denials are returned to the agent as tool errors.
 
-## JSON Protocol
+## Native Tool Calling
 
-The model must return one strict JSON object per step.
+Lee Codex sends OpenAI-compatible `tools` definitions with every model request and asks the model to use `tool_choice: "auto"`. Assistant messages with `tool_calls` are executed as workspace tools. Tool results are returned as `role: "tool"` messages with matching `tool_call_id` values.
 
-Tool action:
+The default OpenRouter provider also requests `provider.require_parameters: true` so routing does not silently ignore native tool-calling parameters.
 
-```json
-{"type":"tool","name":"read_file","args":{"path":"package.json"}}
-```
+The old prompt-only JSON action protocol is no longer the default path.
 
-Final action:
+## Verbose Logs
 
-```json
-{"type":"final","message":"Done."}
-```
+`--verbose` prints assistant content, requested tool calls, tool results, resolver errors, and response metadata with stable colors when the terminal supports ANSI colors.
 
-Lee Codex rejects prose-wrapped JSON and Markdown fences. If the first response is invalid JSON, the agent asks for one repair response. If the repair also fails, the turn fails.
+Verbose runs also write local JSON logs under `log/`:
+
+- Single-shot mode creates one log file per run.
+- Interactive mode creates one log file per session.
+- Generated `log/*.json` files are gitignored.
+- Logs are not redacted. They may contain prompts, file contents, command output, and tool arguments.
+
+Each log contains an envelope with metadata, the replayable OpenAI-compatible `messages` array, raw assistant responses, tool results, resolver errors, and final status.
 
 ## Development
 
@@ -122,7 +125,7 @@ The test suite uses deterministic fake models and does not require provider cred
 ## V1 Non-Goals
 
 - Persistent chat sessions
-- Native API tool-calling
+- JSON-schema fallback mode
 - Streaming responses
 - Patch-based editing
 - Built-in git behavior

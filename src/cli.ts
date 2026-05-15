@@ -97,7 +97,7 @@ export async function parseCliArgs(
       parsePositiveInteger
     )
     .option("--yes", "approve write_file and run_command tool calls")
-    .option("--verbose", "show raw protocol and provider debug details")
+    .option("--verbose", "show colored debug output and write a JSON conversation log")
     .exitOverride()
     .configureOutput({
       writeErr: (message) => process.stderr.write(message),
